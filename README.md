@@ -262,8 +262,8 @@ MIT License - See [LICENSE](LICENSE) file for details.
 Data Science Student | Navy Veteran
 Skagit Valley College (AAS Data Science, Expected July 2025)
 
-- GitHub: [@green8-dot](https://github.com/yourusername)
-- LinkedIn: [https://www.linkedin.com/in/derek-green-44723323a/](https://linkedin.com/in/yourprofile)
+- GitHub: [@green8-dot](https://github.com/green8-dot)
+- LinkedIn: [https://www.linkedin.com/in/derek-green-44723323a/](https://www.linkedin.com/in/derek-green-44723323a/)
 
 ---
 
@@ -273,4 +273,5 @@ Skagit Valley College (AAS Data Science, Expected July 2025)
 - Semantic Scholar for comprehensive metadata APIs
 - Neo4j for graph database technology
 - PyTorch Geometric team for GNN framework
+
 
