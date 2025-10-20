@@ -1,0 +1,73 @@
+# Dr. Theorist Public Repo - Sanitized .gitignore
+
+# === CREDENTIALS & SECRETS ===
+.env
+*.env
+.env.*
+*_secret*
+*_secrets*
+jwt_secret.key
+master_key.env
+
+# === PERSONAL/PROPRIETARY ===
+moneyman_ml/
+career_planning/
+recognize py/
+orbitscope_ml/
+orbitscope_website/
+
+# === ARCHIVED & BACKUPS ===
+archived_for_review/
+backups/
+*_backup/
+*.backup
+
+# === DATABASES (contain real data) ===
+*.db
+*.sqlite
+*.sqlite3
+databases/
+*.sql
+
+# === CHECKPOINTS & MODELS (too large) ===
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+preprocessed_data/
+
+# === LOGS & TEMP ===
+*.log
+logs/
+wandb/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# === VIRTUAL ENVIRONMENTS ===
+venv/
+env/
+ENV/
+*.venv
+
+# === OS FILES ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# === IDE ===
+.vscode/
+.idea/
+*.iml
+
+# === KEEP THESE (public research code) ===
+!production/graph_db/
+!production/training/
+!publication/
+!tools/
+!README.md
+!requirements.txt
+!LICENSE

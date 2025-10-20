@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""
+Enhanced Production Training Script: Research Paper Classifier
+Improvements over baseline:
+  1. Focal Loss for class imbalance handling
+  2. Class weights for balanced training
+  3. Dropout regularization (0.1)
+  4. More epochs (10 instead of 3)
+  5. Learning rate scheduling (cosine with warmup)
+  6. Better monitoring and per-class metrics
+
+Target: >85% accuracy for production deployment
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_cosine_schedule_with_warmup
+from torch.optim import AdamW
+from torch.cuda.amp import autocast, GradScaler
+import sqlite3
+from pathlib import Path
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+import json
+from datetime import datetime
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    Focuses training on hard examples by down-weighting easy ones.
+    """
+
+    def __init__(self, gamma=2.0, alpha=None, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha  # Class weights
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: logits (batch_size, num_classes)
+            targets: class indices (batch_size,)
+        """
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        p_t = torch.exp(-ce_loss)
+        focal_loss = (1 - p_t) ** self.gamma * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class ResearchPaperDataset(Dataset):
+    """Dataset for research paper classification"""
+
+    def __init__(self, texts, labels, tokenizer, max_length=512):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        label = self.labels[idx]
+
+        encoding = self.tokenizer(
+            text,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        )
+
+        return {
+            'input_ids': encoding['input_ids'].flatten(),
+            'attention_mask': encoding['attention_mask'].flatten(),
+            'labels': torch.tensor(label, dtype=torch.long)
+        }
+
+
+class EnhancedResearchClassifierTrainer:
+    """Enhanced production trainer with focal loss and class weights"""
+
+    def __init__(
+        self,
+        model_name='allenai/scibert_scivocab_uncased',
+        database_path='/media/d1337g/SystemBackup/framework_baseline/models_denormalized/cs_research.db',
+        output_dir='production/models/scibert'
+    ):
+        self.model_name = model_name
+        self.db_path = Path(database_path)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        # Enable cuDNN auto-tuner for optimization
+        if self.device == 'cuda':
+            torch.backends.cudnn.benchmark = True
+
+        print("="*80)
+        print("ENHANCED RESEARCH PAPER CLASSIFIER - PRODUCTION TRAINING")
+        print("="*80)
+        print("Improvements:")
+        print("  [1] Focal Loss (gamma=2.0) - handles class imbalance")
+        print("  [2] Class weights - balances minority classes")
+        print("  [3] Dropout regularization (0.1)")
+        print("  [4] 10 epochs (vs 3 baseline)")
+        print("  [5] Cosine LR schedule with warmup")
+        print("")
+        print(f"Device: {self.device}")
+        if self.device == 'cuda':
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+            print(f"Mixed Precision: ENABLED (FP16)")
+            print(f"cuDNN Benchmark: ENABLED")
+        print(f"Database: {self.db_path}")
+        print(f"Output: {self.output_dir}")
+        print("="*80 + "\n")
+
+    def load_data(self):
+        """Load data from cs_research database"""
+        print("[1/7] Loading dataset from database...")
+
+        if not self.db_path.exists():
+            raise FileNotFoundError(f"Database not found: {self.db_path}")
+
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+
+        # Load papers with title, summary, and category
+        cursor.execute("""
+            SELECT title, summary, category
+            FROM research_papers
+            WHERE title IS NOT NULL
+              AND summary IS NOT NULL
+              AND category IS NOT NULL
+        """)
+
+        data = cursor.fetchall()
+        conn.close()
+
+        # Prepare texts and labels
+        texts = []
+        labels = []
+        categories = []
+
+        for title, summary, category in data:
+            text = f"{title}. {summary}"
+            texts.append(text)
+            if category not in categories:
+                categories.append(category)
+            labels.append(categories.index(category))
+
+        self.categories = sorted(categories)  # Sort for consistency
+        self.num_classes = len(self.categories)
+
+        # Rebuild labels with sorted categories
+        category_to_idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        labels = [category_to_idx[data[i][2]] for i in range(len(data))]
+
+        print(f"   Loaded: {len(texts):,} papers")
+        print(f"   Categories: {self.num_classes}")
+        for i, cat in enumerate(self.categories):
+            count = labels.count(i)
+            print(f"     {i+1}. {cat}: {count:,} papers")
+
+        return texts, labels
+
+    def calculate_class_weights(self, labels):
+        """Calculate class weights for imbalanced dataset"""
+        print("\n[WEIGHTS] Calculating class weights...")
+
+        label_counts = np.bincount(labels)
+        total_samples = len(labels)
+
+        # Inverse frequency weighting
+        class_weights = total_samples / (self.num_classes * label_counts)
+        class_weights = torch.FloatTensor(class_weights).to(self.device)
+
+        print("   Class weights:")
+        for i, (cat, weight) in enumerate(zip(self.categories, class_weights)):
+            print(f"     {cat}: {weight:.3f} (samples: {label_counts[i]})")
+
+        return class_weights
+
+    def prepare_datasets(self, texts, labels, test_size=0.2):
+        """Split and prepare datasets"""
+        print(f"\n[2/7] Preparing train/validation split ({int((1-test_size)*100)}/{int(test_size*100)})...")
+
+        # Split data
+        X_train, X_val, y_train, y_val = train_test_split(
+            texts, labels, test_size=test_size, random_state=42, stratify=labels
+        )
+
+        print(f"   Train: {len(X_train):,} samples")
+        print(f"   Validation: {len(X_val):,} samples")
+
+        # Initialize tokenizer
+        print("\n[3/7] Loading tokenizer...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        print(f"   Tokenizer: {self.model_name}")
+
+        # Create datasets
+        train_dataset = ResearchPaperDataset(X_train, y_train, self.tokenizer)
+        val_dataset = ResearchPaperDataset(X_val, y_val, self.tokenizer)
+
+        return train_dataset, val_dataset, y_train
+
+    def create_dataloaders(self, train_dataset, val_dataset, batch_size=16):
+        """Create data loaders"""
+        print(f"\n[4/7] Creating data loaders (batch_size={batch_size})...")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True if self.device == 'cuda' else False
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True if self.device == 'cuda' else False
+        )
+
+        print(f"   Train batches: {len(train_loader)}")
+        print(f"   Val batches: {len(val_loader)}")
+
+        return train_loader, val_loader
+
+    def initialize_model(self, class_weights, learning_rate=2e-5, num_training_steps=None):
+        """Initialize model, optimizer, scheduler, and focal loss"""
+        print(f"\n[5/7] Initializing enhanced model...")
+
+        # Load model with dropout
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.model_name,
+            num_labels=self.num_classes,
+            hidden_dropout_prob=0.1,  # Dropout in hidden layers
+            attention_probs_dropout_prob=0.1  # Dropout in attention
+        )
+        self.model.to(self.device)
+
+        # Focal loss with class weights
+        self.criterion = FocalLoss(gamma=2.0, alpha=class_weights, reduction='mean')
+        print(f"   Loss: Focal Loss (gamma=2.0) with class weights")
+
+        # Optimizer
+        self.optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=0.01)
+
+        # Cosine learning rate scheduler with warmup
+        if num_training_steps:
+            num_warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
+            self.scheduler = get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
+            print(f"   Scheduler: Cosine with warmup ({num_warmup_steps} warmup steps)")
+        else:
+            self.scheduler = None
+
+        # Mixed precision scaler
+        self.scaler = GradScaler() if self.device == 'cuda' else None
+
+        print(f"   Model: {self.model_name}")
+        print(f"   Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"   Trainable params: {sum(p.numel() for p in self.model.parameters() if p.requires_grad):,}")
+        print(f"   Learning rate: {learning_rate}")
+        print(f"   Optimizer: AdamW (weight_decay=0.01)")
+        print(f"   Dropout: 0.1")
+
+    def train_epoch(self, train_loader, epoch):
+        """Train one epoch"""
+        self.model.train()
+        total_loss = 0
+        predictions = []
+        true_labels = []
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+
+        for batch in pbar:
+            input_ids = batch['input_ids'].to(self.device)
+            attention_mask = batch['attention_mask'].to(self.device)
+            labels = batch['labels'].to(self.device)
+
+            self.optimizer.zero_grad()
+
+            # Mixed precision training
+            if self.scaler:
+                with autocast():
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask
+                    )
+                    loss = self.criterion(outputs.logits, labels)
+
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+                loss = self.criterion(outputs.logits, labels)
+                loss.backward()
+                self.optimizer.step()
+
+            # Update learning rate
+            if self.scheduler:
+                self.scheduler.step()
+
+            total_loss += loss.item()
+
+            # Get predictions
+            preds = torch.argmax(outputs.logits, dim=1)
+            predictions.extend(preds.cpu().numpy())
+            true_labels.extend(labels.cpu().numpy())
+
+            # Update progress bar
+            current_lr = self.optimizer.param_groups[0]['lr']
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'lr': f'{current_lr:.2e}'
+            })
+
+        avg_loss = total_loss / len(train_loader)
+        accuracy = accuracy_score(true_labels, predictions)
+        f1_macro = f1_score(true_labels, predictions, average='macro', zero_division=0)
+
+        return avg_loss, accuracy, f1_macro
+
+    def validate(self, val_loader):
+        """Validate model"""
+        self.model.eval()
+        total_loss = 0
+        predictions = []
+        true_labels = []
+
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Validation"):
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels = batch['labels'].to(self.device)
+
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+
+                loss = self.criterion(outputs.logits, labels)
+                total_loss += loss.item()
+
+                preds = torch.argmax(outputs.logits, dim=1)
+                predictions.extend(preds.cpu().numpy())
+                true_labels.extend(labels.cpu().numpy())
+
+        avg_loss = total_loss / len(val_loader)
+        accuracy = accuracy_score(true_labels, predictions)
+        f1_macro = f1_score(true_labels, predictions, average='macro', zero_division=0)
+
+        return avg_loss, accuracy, f1_macro, predictions, true_labels
+
+    def train(self, num_epochs=10, batch_size=16):
+        """Main training loop"""
+        print(f"\n[6/7] Training model ({num_epochs} epochs)...")
+
+        # Load and prepare data
+        texts, labels = self.load_data()
+
+        # Calculate class weights
+        class_weights = self.calculate_class_weights(labels)
+
+        train_dataset, val_dataset, y_train = self.prepare_datasets(texts, labels)
+        train_loader, val_loader = self.create_dataloaders(
+            train_dataset, val_dataset, batch_size
+        )
+
+        # Calculate total training steps for scheduler
+        num_training_steps = len(train_loader) * num_epochs
+
+        self.initialize_model(class_weights, num_training_steps=num_training_steps)
+
+        print(f"\n{'='*80}")
+        print("TRAINING START")
+        print(f"{'='*80}\n")
+
+        best_val_accuracy = 0
+        best_val_f1 = 0
+        training_history = []
+
+        for epoch in range(1, num_epochs + 1):
+            print(f"\n--- Epoch {epoch}/{num_epochs} ---")
+
+            # Train
+            train_loss, train_acc, train_f1 = self.train_epoch(train_loader, epoch)
+
+            # Validate
+            val_loss, val_acc, val_f1, val_preds, val_labels = self.validate(val_loader)
+
+            # Log results
+            print(f"\nResults:")
+            print(f"  Train - Loss: {train_loss:.4f} | Acc: {train_acc:.4f} ({train_acc*100:.2f}%) | F1: {train_f1:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f} | Acc: {val_acc:.4f} ({val_acc*100:.2f}%) | F1: {val_f1:.4f}")
+
+            # Save if best
+            if val_acc > best_val_accuracy:
+                best_val_accuracy = val_acc
+                best_val_f1 = val_f1
+                model_path = self.output_dir / f'scibert_enhanced_acc{val_acc*100:.1f}_f1{val_f1*100:.1f}.pth'
+                torch.save(self.model.state_dict(), model_path)
+                print(f"  [BEST] Saved model: {model_path.name}")
+
+            # Save history
+            training_history.append({
+                'epoch': epoch,
+                'train_loss': train_loss,
+                'train_accuracy': train_acc,
+                'train_f1_macro': train_f1,
+                'val_loss': val_loss,
+                'val_accuracy': val_acc,
+                'val_f1_macro': val_f1
+            })
+
+            # Print per-class metrics every 2 epochs
+            if epoch % 2 == 0:
+                print(f"\nPer-Class Performance (Epoch {epoch}):")
+                report = classification_report(
+                    val_labels,
+                    val_preds,
+                    target_names=self.categories,
+                    zero_division=0,
+                    digits=3
+                )
+                print(report)
+
+        # Final evaluation
+        print(f"\n{'='*80}")
+        print("TRAINING COMPLETE")
+        print(f"{'='*80}")
+        print(f"\nBest Validation Accuracy: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
+        print(f"Best Validation F1 (macro): {best_val_f1:.4f} ({best_val_f1*100:.2f}%)")
+
+        # Final classification report
+        print("\nFinal Classification Report:")
+        print(classification_report(
+            val_labels,
+            val_preds,
+            target_names=self.categories,
+            zero_division=0
+        ))
+
+        # Confusion matrix
+        print("\nConfusion Matrix:")
+        cm = confusion_matrix(val_labels, val_preds)
+        print("Categories:", self.categories)
+        print(cm)
+
+        # Save metadata
+        metadata = {
+            'model_name': self.model_name,
+            'num_classes': self.num_classes,
+            'categories': self.categories,
+            'best_val_accuracy': best_val_accuracy,
+            'best_val_f1_macro': best_val_f1,
+            'training_history': training_history,
+            'database_path': str(self.db_path),
+            'timestamp': datetime.now().isoformat(),
+            'num_epochs': num_epochs,
+            'batch_size': batch_size,
+            'enhancements': {
+                'focal_loss': True,
+                'focal_gamma': 2.0,
+                'class_weights': True,
+                'dropout': 0.1,
+                'cosine_schedule': True,
+                'warmup_ratio': 0.1
+            }
+        }
+
+        metadata_path = self.output_dir / 'training_metadata_enhanced.json'
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        print(f"\n[7/7] Training metadata saved: {metadata_path}")
+        print(f"\n{'='*80}\n")
+
+        return metadata
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Train Enhanced Research Paper Classifier')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs (default: 10)')
+    parser.add_argument('--batch-size', type=int, default=16, help='Batch size (default: 16)')
+    parser.add_argument('--output-dir', type=str, default='production/models/scibert', help='Output directory')
+
+    args = parser.parse_args()
+
+    # Run training
+    trainer = EnhancedResearchClassifierTrainer(output_dir=args.output_dir)
+    metadata = trainer.train(num_epochs=args.epochs, batch_size=args.batch_size)
+
+    # Check if meets production threshold
+    if metadata['best_val_accuracy'] >= 0.85:
+        print(f"[SUCCESS] Model ready for production deployment (accuracy: {metadata['best_val_accuracy']*100:.2f}%)")
+    else:
+        print(f"[INFO] Model accuracy: {metadata['best_val_accuracy']*100:.2f}%")
+        if metadata['best_val_accuracy'] >= 0.75:
+            print(f"[GOOD] Significant improvement over baseline (58.3%)")
+        else:
+            print(f"[WARN] May need further tuning to reach 85% threshold")
