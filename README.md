@@ -259,8 +259,7 @@ MIT License - See [LICENSE](LICENSE) file for details.
 ## Author
 
 **Derek Green**
-Data Science Student | Navy Veteran
-Skagit Valley College (AAS Data Science, Expected July 2025)
+Data Science Student
 
 - GitHub: [@green8-dot](https://github.com/green8-dot)
 - LinkedIn: [https://www.linkedin.com/in/derek-green-44723323a/](https://www.linkedin.com/in/derek-green-44723323a/)
@@ -273,5 +272,6 @@ Skagit Valley College (AAS Data Science, Expected July 2025)
 - Semantic Scholar for comprehensive metadata APIs
 - Neo4j for graph database technology
 - PyTorch Geometric team for GNN framework
+
 
 
