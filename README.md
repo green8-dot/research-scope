@@ -70,7 +70,7 @@ GraphSAGE (2-layer)
 ### Installation
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/research-scope
+git clone https://github.com/green8-dot/research-scope
 cd research-scope
 
 # Create virtual environment
@@ -228,7 +228,7 @@ GraphSAGE Classifier → Predictions
 
 ## Citation
 
-Paper submitted to arXiv (cs.LG). Citation details will be added upon publication.
+Paper submitted to arXiv (cs.LG). Citation details will be added upon publication. (in progress)
 
 ```bibtex
 @article{green2025researchscope,
@@ -272,6 +272,7 @@ Data Science Student
 - Semantic Scholar for comprehensive metadata APIs
 - Neo4j for graph database technology
 - PyTorch Geometric team for GNN framework
+
 
 
 
