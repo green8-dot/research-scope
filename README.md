@@ -1,59 +1,55 @@
-# ResearchScope: Automated Research Intelligence with Graph Neural Networks
+# ResearchScope
+
+Research paper classification using Graph Neural Networks.
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green.svg)](https://neo4j.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Automated research paper classification and hypothesis generation using Graph Neural Networks (GNN) with comprehensive author recovery and collaboration network analysis.**
-
-**Paper:** *Submitted to arXiv (cs.LG)* - Coming Soon
-
 ---
 
 ## Overview
 
-ResearchScope addresses critical challenges in automated research synthesis:
-- **Author Disambiguation**: 99.7% recovery rate via 5-tier cascading API architecture
-- **Graph-Enhanced Classification**: 85%+ F1 score combining citations + co-authorship
-- **Scalable Pipeline**: Processes 31K+ papers with Neo4j + PyTorch Geometric
+Research paper classification with graph neural networks:
+- Author recovery: 99.7% rate via 5-tier API cascade
+- Classification: 85.4% F1 combining citations + co-authorship
+- Scale: 31K+ papers with Neo4j + PyTorch Geometric
 
-Unlike traditional citation networks, we incorporate **author collaboration patterns** and **semantic embeddings** (SciBERT) to capture research community dynamics.
+Uses author collaboration patterns and SciBERT embeddings for classification.
 
 ---
 
-## Key Features
+## Features
 
-### 1. Multi-Tier Author Recovery
-**Problem:** 19% of research papers lack complete author metadata
-**Solution:** Cascading 5-tier API fallback system
+### Author Recovery
+5-tier API cascade for author metadata:
 
 ```
 Tier 1: Free APIs (OpenAlex, CrossRef, DBLP)
 Tier 2: Domain-specific (PubMed, Europe PMC)
 Tier 3: DOI resolution
-Tier 4: Text extraction & pattern matching
-Tier 5: Manual lookup fallback
+Tier 4: Text extraction + pattern matching
+Tier 5: Manual lookup
 ```
 
-**Result:** 99.7% author recovery rate
+Result: 99.7% recovery rate
 
-### 2. Hybrid Graph Representation
-- **Nodes:** Research papers (31,128+)
-- **Edges:** Citation links + Co-authorship relationships
-- **Features:** SciBERT embeddings (768-dim) + Metadata + Network metrics
+### Graph Representation
+- Nodes: 31,128 research papers
+- Edges: Citations + co-authorship
+- Features: SciBERT embeddings (768-dim) + metadata
 
-### 3. GraphSAGE Classification
+### Classification
 ```python
-# Architecture
-GraphSAGE (2-layer)
-    Layer 1: 768 → 512 (mean aggregation)
-    Layer 2: 512 → num_categories
-    Dropout: 0.3
-    Loss: CrossEntropyLoss
+# GraphSAGE architecture
+Layer 1: 768 → 512 (mean aggregation)
+Layer 2: 512 → num_categories
+Dropout: 0.3
+Loss: CrossEntropyLoss
 ```
 
-**Performance:** 85.4% F1 score (vs. 78.9% SciBERT-only baseline)
+Performance: 85.4% F1 (baseline: 78.9% SciBERT-only)
 
 ---
 
